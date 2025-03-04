@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion"
 import { cn } from "@/lib/utils"
 import { transcribeAudio, formatHandHistory } from "@/lib/transcription"
-import { Loader2, StopCircle, Mic, Volume2, Save, Trash2, Copy, AlertCircle, Settings } from "lucide-react"
+import { Loader2, StopCircle, Mic, Volume2, Save, Trash2, Copy, AlertCircle, Settings, XCircle } from "lucide-react"
 import { GameSettings } from "@/components/game-settings"
 import { z } from "zod"
 
@@ -41,6 +41,9 @@ export function Transcriber() {
   })
   const [processingQueue, setProcessingQueue] = useState<{ blob: Blob; start: number; end: number }[]>([])
   const [activeTab, setActiveTab] = useState<string>("record")
+
+  // Add a cancellation flag
+  const [isCancelling, setIsCancelling] = useState(false)
 
   // Game settings state
   const [gameSettings, setGameSettings] = useState<GameSettingsType | null>(null)
@@ -123,7 +126,7 @@ export function Transcriber() {
   // Process the queue of audio segments
   useEffect(() => {
     const processQueue = async () => {
-      if (processingQueue.length > 0 && !isProcessing && apiKeyStatus === "set") {
+      if (processingQueue.length > 0 && !isProcessing && apiKeyStatus === "set" && !isCancelling) {
         setIsProcessing(true)
         const segment = processingQueue[0]
 
@@ -154,7 +157,7 @@ export function Transcriber() {
     }
 
     processQueue()
-  }, [processingQueue, isProcessing, apiKey, apiKeyStatus])
+  }, [processingQueue, isProcessing, apiKey, apiKeyStatus, isCancelling])
 
   // Set up audio visualization
   const setupAudioVisualization = (stream: MediaStream) => {
@@ -193,6 +196,8 @@ export function Transcriber() {
   const startRecording = async () => {
     // Clear any previous errors
     setRecordingError(null)
+    // Reset cancellation flag
+    setIsCancelling(false)
 
     // Check if already recording
     if (isRecording) {
@@ -272,8 +277,13 @@ export function Transcriber() {
         console.log(`Audio blob created: ${audioBlob.size} bytes`)
         setAudioBlob(audioBlob)
 
-        if (!continuousMode) {
-          processRecording(audioBlob)
+        // Only process if we're not cancelling
+        if (!isCancelling) {
+          if (!continuousMode) {
+            processRecording(audioBlob)
+          }
+        } else {
+          console.log("Recording was cancelled - not processing")
         }
       }
 
@@ -319,6 +329,9 @@ export function Transcriber() {
       return
     }
 
+    // Ensure the cancellation flag is reset (this is a normal stop)
+    setIsCancelling(false)
+
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       try {
         mediaRecorderRef.current.stop()
@@ -348,7 +361,56 @@ export function Transcriber() {
     }
 
     setAudioLevel(0)
-    console.log("Recording stopped completely")
+  }
+
+  // Cancel recording without processing
+  const cancelRecording = () => {
+    console.log("Canceling recording...")
+
+    if (!isRecording) {
+      console.log("Not recording, ignoring cancel request")
+      return
+    }
+
+    // Set the cancellation flag to true before stopping
+    setIsCancelling(true)
+
+    // First stop the recording
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try {
+        mediaRecorderRef.current.stop()
+        console.log("MediaRecorder stopped (canceled)")
+      } catch (error) {
+        console.error("Error stopping MediaRecorder during cancel:", error)
+      }
+    } else {
+      console.warn("MediaRecorder not active, can't cancel")
+    }
+
+    setIsRecording(false)
+
+    // Stop timer
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+
+    // Stop microphone
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((track) => {
+        track.stop()
+        console.log("Audio track stopped (canceled)")
+      })
+      micStreamRef.current = null
+    }
+
+    // Clear the audio chunks to discard the recording
+    audioChunksRef.current = []
+    setAudioBlob(null)
+    setRecordingTime(0)
+    setAudioLevel(0)
+    
+    console.log("Recording canceled and discarded")
   }
 
   // Save API key
@@ -465,7 +527,7 @@ export function Transcriber() {
   }
 
   const markNewHand = () => {
-    if (!isRecording || !mediaRecorderRef.current) return
+    if (!isRecording || !mediaRecorderRef.current || isCancelling) return
 
     // Stop the current recording
     mediaRecorderRef.current.stop()
@@ -473,16 +535,19 @@ export function Transcriber() {
     // Create a blob from the current chunks
     const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" })
 
-    // Add this segment to the processing queue
-    setProcessingQueue((prev) => [
-      ...prev,
-      {
-        blob: audioBlob,
-        start: currentSegment.start,
-        end: recordingTime,
-      },
-    ])
-
+    // Only add to processing queue if we're not cancelling
+    if (!isCancelling) {
+      // Add this segment to the processing queue
+      setProcessingQueue((prev) => [
+        ...prev,
+        {
+          blob: audioBlob,
+          start: currentSegment.start,
+          end: recordingTime,
+        },
+      ])
+    }
+    
     // Reset audio chunks for the next segment
     audioChunksRef.current = []
 
@@ -707,6 +772,21 @@ export function Transcriber() {
                       <Mic className="w-12 h-12 text-blue-400" />
                     )}
                   </Button>
+
+                  {/* Cancel button - only visible during recording */}
+                  {isRecording && (
+                    <Button
+                      type="button"
+                      onClick={cancelRecording}
+                      className="absolute -right-16 top-1/2 transform -translate-y-1/2 bg-gray-800 hover:bg-gray-700 text-red-400 hover:text-red-300"
+                      size="sm"
+                      variant="outline"
+                      aria-label="Cancel recording"
+                    >
+                      <XCircle className="h-4 w-4 mr-1" />
+                      Cancel
+                    </Button>
+                  )}
 
                   {isRecording && (
                     <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-gray-900 px-3 py-1 rounded-full text-red-400 text-sm font-mono">
