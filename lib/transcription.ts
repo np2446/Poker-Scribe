@@ -32,6 +32,9 @@ export async function transcribeAudio(audioBlob: Blob, apiKey: string): Promise<
 
 /**
  * Formats transcribed text into standard poker hand history format using OpenAI
+ * @param transcription The raw transcription text, optionally with game settings context
+ * @param apiKey OpenAI API key
+ * @returns Formatted hand history
  */
 export async function formatHandHistory(transcription: string, apiKey: string): Promise<string> {
   try {

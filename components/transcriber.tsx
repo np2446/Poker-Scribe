@@ -9,7 +9,21 @@ import { Label } from "@/components/ui/label"
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion"
 import { cn } from "@/lib/utils"
 import { transcribeAudio, formatHandHistory } from "@/lib/transcription"
-import { Loader2, StopCircle, Mic, Volume2, Save, Trash2, Copy, AlertCircle } from "lucide-react"
+import { Loader2, StopCircle, Mic, Volume2, Save, Trash2, Copy, AlertCircle, Settings } from "lucide-react"
+import { GameSettings } from "@/components/game-settings"
+import { z } from "zod"
+
+// Define a type for game settings
+type GameSettingsType = {
+  gameType?: "cash" | "tournament"
+  tableSize?: string
+  smallBlind?: string
+  bigBlind?: string
+  ante?: string
+  buyIn?: string
+  startingStack?: string
+  currency?: string
+}
 
 export function Transcriber() {
   const [isRecording, setIsRecording] = useState(false)
@@ -26,7 +40,11 @@ export function Transcriber() {
     isProcessing: false,
   })
   const [processingQueue, setProcessingQueue] = useState<{ blob: Blob; start: number; end: number }[]>([])
+  const [activeTab, setActiveTab] = useState<string>("record")
 
+  // Game settings state
+  const [gameSettings, setGameSettings] = useState<GameSettingsType | null>(null)
+  
   // API key state
   const [apiKey, setApiKey] = useState<string>("")
   const [apiKeyStatus, setApiKeyStatus] = useState<"unset" | "set" | "validating" | "invalid">("unset")
@@ -44,12 +62,23 @@ export function Transcriber() {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
 
-  // Load API key from localStorage on component mount
+  // Load API key and game settings from localStorage on component mount
   useEffect(() => {
     const savedApiKey = localStorage.getItem("openai-api-key")
     if (savedApiKey) {
       setApiKey(savedApiKey)
       setApiKeyStatus("set")
+    }
+
+    // Load saved game settings
+    const savedSettings = localStorage.getItem("poker-game-settings")
+    if (savedSettings) {
+      try {
+        const parsedSettings = JSON.parse(savedSettings)
+        setGameSettings(parsedSettings)
+      } catch (e) {
+        console.error("Error parsing saved game settings:", e)
+      }
     }
 
     // Check if browser supports MediaRecorder
@@ -366,23 +395,59 @@ export function Transcriber() {
     setApiKeyStatus("unset")
   }
 
+  // Handle game settings update
+  const handleGameSettingsSaved = (settings: GameSettingsType) => {
+    setGameSettings(settings)
+    setActiveTab("record") // Switch back to record tab after saving settings
+  }
+
+  // Function to format transcribed text with game settings context
   const processRecording = async (blob: Blob) => {
-    if (apiKeyStatus !== "set") {
-      setApiKeyError("Please set your OpenAI API key first")
-      return
-    }
-
     setIsProcessing(true)
-
+    setTranscription("")
+    
     try {
-      // Step 1: Transcribe audio to text
+      // Transcribe audio
       const transcribedText = await transcribeAudio(blob, apiKey)
       setTranscription(transcribedText)
+      
+      // Prepare context with game settings if available
+      let contextPrompt = transcribedText
+      
+      if (gameSettings) {
+        const { gameType, tableSize, smallBlind, bigBlind, ante, startingStack, currency } = gameSettings
+        
+        // Add game settings context to the transcription
+        let settingsContext = "Additional context: "
+        
+        if (gameType) {
+          settingsContext += `Game type: ${gameType === "cash" ? "Cash Game" : "Tournament"}. `
+        }
+        
+        if (gameType === "cash" && smallBlind && bigBlind) {
+          settingsContext += `Stakes: ${currency || "$"}${smallBlind}/${currency || "$"}${bigBlind}. `
+          
+          if (ante && ante !== "0") {
+            settingsContext += `Ante: ${currency || "$"}${ante}. `
+          }
+        }
+        
+        if (tableSize) {
+          settingsContext += `${tableSize}-max table. `
+        }
+        
+        if (startingStack) {
+          settingsContext += `Starting stack: ${startingStack}${gameType === "cash" ? "BB" : " chips"}. `
+        }
+        
+        // Prepend the context to the transcription
+        contextPrompt = `${settingsContext}\n\n${transcribedText}`
+      }
 
-      // Step 2: Format transcription to poker hand history
-      const formatted = await formatHandHistory(transcribedText, apiKey)
-
-      // Add to our list of formatted hands
+      // Format hand history with the context
+      const formatted = await formatHandHistory(contextPrompt, apiKey)
+      
+      // Add the formatted hand to our list
       setFormattedHands((prev) => [
         ...prev,
         {
@@ -577,10 +642,20 @@ export function Transcriber() {
             )}
           </div>
 
-          <Tabs defaultValue="record" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 mb-6 bg-gray-900/50">
-              <TabsTrigger value="record">Record</TabsTrigger>
-              <TabsTrigger value="hands">Hands ({formattedHands.length})</TabsTrigger>
+          <Tabs defaultValue="record" value={activeTab} onValueChange={setActiveTab}>
+            <TabsList className="grid w-full grid-cols-3 mb-6 bg-gray-900/50">
+              <TabsTrigger value="record" className="flex items-center gap-2">
+                <Mic className="h-4 w-4" />
+                Record
+              </TabsTrigger>
+              <TabsTrigger value="history" className="flex items-center gap-2">
+                <Save className="h-4 w-4" />
+                History
+              </TabsTrigger>
+              <TabsTrigger value="settings" className="flex items-center gap-2">
+                <Settings className="h-4 w-4" />
+                Game Setup
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="record" className="mt-0">
@@ -696,7 +771,7 @@ export function Transcriber() {
                     <li>Clearly describe your poker hand (positions, actions, bet sizes)</li>
                     <li>In continuous mode, click "Mark New Hand" when you finish describing a hand</li>
                     <li>Click the stop button when you're done recording all hands</li>
-                    <li>View your formatted hands in the "Hands" tab</li>
+                    <li>View your formatted hands in the "History" tab</li>
                   </ol>
                   <p className="mt-4 text-xs text-gray-500">
                     Example: "I was in the big blind with Ace King suited. UTG raised to 3BB, I 3-bet to 9BB, they
@@ -706,7 +781,7 @@ export function Transcriber() {
               )}
             </TabsContent>
 
-            <TabsContent value="hands" className="mt-0">
+            <TabsContent value="history">
               {formattedHands.length > 0 ? (
                 <div className="space-y-4">
                   <div className="flex justify-between items-center mb-4">
@@ -789,6 +864,10 @@ export function Transcriber() {
                   </Button>
                 </div>
               )}
+            </TabsContent>
+
+            <TabsContent value="settings">
+              <GameSettings onSettingsSaved={handleGameSettingsSaved} />
             </TabsContent>
           </Tabs>
         </Card>

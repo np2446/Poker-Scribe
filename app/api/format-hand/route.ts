@@ -19,11 +19,16 @@ export async function POST(req: NextRequest) {
       apiKey: apiKey,
     })
 
+    // Look for "Additional context:" in the transcription, which indicates game settings are included
+    const hasGameSettings = transcription.includes("Additional context:")
+
     // Use the AI SDK to format the hand history with the provided API key
     const { text: formattedHand } = await generateText({
       model: customOpenAI("gpt-4o"),
       prompt: `
         You are a poker hand history formatter. Convert the following verbal description of a poker hand into standard poker hand history format.
+        
+        ${hasGameSettings ? `The input may include an "Additional context:" section with game settings. Use this information to enhance the hand history output.` : ''}
         
         Follow these formatting rules:
         1. Include game type, stakes, and table information in the header
@@ -34,7 +39,7 @@ export async function POST(req: NextRequest) {
         6. Include pot sizes after each street
         7. Show the winner and amount won
         
-        Here's the verbal description:
+        Here's the ${hasGameSettings ? 'input with context and' : ''} verbal description:
         ${transcription}
         
         Return ONLY the formatted hand history text with no additional explanation.
