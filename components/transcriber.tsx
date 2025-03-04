@@ -12,6 +12,14 @@ import { transcribeAudio, formatHandHistory } from "@/lib/transcription"
 import { Loader2, StopCircle, Mic, Volume2, Save, Trash2, Copy, AlertCircle, Settings, XCircle, Activity, X } from "lucide-react"
 import { GameSettings } from "@/components/game-settings"
 import { z } from "zod"
+import { useToast } from '@/components/ui/use-toast'
+import { Badge } from '@/components/ui/badge'
+import { GameSettingsManager } from '@/components/game-settings-manager'
+import ReactMarkdown from 'react-markdown'
+import { saveHandHistory, getHandHistories, deleteHandHistory, saveHandAnalysis, getHandAnalysis } from '@/lib/database'
+import { HandHistory, HandAnalysis, GameSettingConfig } from '@/lib/supabase'
+import { getDefaultGameSettingConfig } from '@/lib/database'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 // Define a type for game settings
 type GameSettingsType = {
@@ -26,7 +34,13 @@ type GameSettingsType = {
   aiModel?: "gpt-3.5-turbo" | "gpt-4o" | "o1" | "o3-mini"
 }
 
-export function Transcriber() {
+interface TranscriberProps {
+  userId: string
+  userApiKey?: string
+}
+
+export function Transcriber({ userId, userApiKey }: TranscriberProps) {
+  const { toast } = useToast()
   const [isRecording, setIsRecording] = useState(false)
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
   const [transcription, setTranscription] = useState("")
@@ -71,6 +85,7 @@ export function Transcriber() {
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
+  const speechRecognitionRef = useRef<SpeechRecognition | null>(null)
 
   // Load API key and game settings from localStorage on component mount
   useEffect(() => {
@@ -716,373 +731,428 @@ export function Transcriber() {
     }
   }
 
+  const handleConvertClick = async () => {
+    if (!transcription.trim()) {
+      toast({
+        title: 'Error',
+        description: 'Please record or enter a hand history first',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (!userApiKey) {
+      toast({
+        title: 'API Key Required',
+        description: 'Please add your OpenAI API key in your account settings',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setIsProcessing(true)
+    
+    try {
+      const response = await fetch('/api/convert-hand', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: transcription,
+          gameSettings,
+          apiKey: userApiKey
+        }),
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Error: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      setFormattedHands((prev) => [
+        ...prev,
+        {
+          id: `hand-${Date.now()}`,
+          text: data.result,
+          timestamp: new Date(),
+        },
+      ])
+      
+      // Save the hand history to database
+      if (data.result) {
+        await saveHandToDatabase(transcription, data.result)
+      }
+    } catch (err) {
+      console.error('Error converting hand:', err)
+      toast({
+        title: 'Conversion Failed',
+        description: 'Failed to convert hand history. Please try again.',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const saveHandToDatabase = async (rawText: string, convertedText: string) => {
+    if (!userId) return
+    
+    try {
+      const handHistory: HandHistory = {
+        user_id: userId,
+        text: convertedText,
+        raw_text: rawText,
+        timestamp: new Date().toISOString(),
+        game_settings: gameSettings
+      }
+      
+      const savedHand = await saveHandHistory(handHistory)
+      if (savedHand) {
+        toast({
+          title: 'Hand Saved',
+          description: 'Hand history saved successfully',
+        })
+        await loadHandHistories()
+      }
+    } catch (err) {
+      console.error('Error saving hand history:', err)
+      toast({
+        title: 'Error',
+        description: 'Failed to save hand history',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handleSelectHistory = (hand: HandHistory) => {
+    setFormattedHands((prev) => [
+      ...prev,
+      {
+        id: `hand-${Date.now()}`,
+        text: hand.text,
+        timestamp: new Date(hand.timestamp),
+      },
+    ])
+    setTranscription(hand.raw_text)
+    setGameSettings(hand.game_settings)
+    setActiveTab("recorder")
+  }
+
+  const handleDeleteHistory = async (id: string) => {
+    try {
+      await deleteHandHistory(id)
+      toast({
+        title: 'Hand Deleted',
+        description: 'Hand history deleted successfully',
+      })
+      setFormattedHands((prev) => prev.filter((hand) => hand.id !== id))
+      setTranscription("")
+      setGameSettings(null)
+      setActiveTab("recorder")
+      await loadHandHistories()
+    } catch (err) {
+      console.error('Error deleting hand history:', err)
+      toast({
+        title: 'Error',
+        description: 'Failed to delete hand history',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const loadHandHistories = async () => {
+    if (!userId) return
+    
+    try {
+      const histories = await getHandHistories(userId)
+      setFormattedHands(histories.map((hand) => ({
+        id: `hand-${Date.now()}`,
+        text: hand.text,
+        timestamp: new Date(hand.timestamp),
+      })))
+    } catch (err) {
+      console.error('Error loading hand histories:', err)
+      toast({
+        title: 'Error',
+        description: 'Failed to load hand histories',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const loadDefaultGameSettings = async () => {
+    if (!userId) return
+    
+    try {
+      const defaultConfig = await getDefaultGameSettingConfig(userId)
+      if (defaultConfig) {
+        setGameSettings(defaultConfig.game_settings)
+      }
+    } catch (err) {
+      console.error('Error loading default game settings:', err)
+    }
+  }
+
+  const handleGameSettingsChange = (newSettings: any) => {
+    setGameSettings(newSettings)
+  }
+
+  const handleConfigSelect = (config: GameSettingConfig) => {
+    setGameSettings(config.game_settings)
+    toast({
+      title: 'Settings Loaded',
+      description: `Loaded settings: ${config.name}`,
+    })
+  }
+
   return (
-    <div className="flex flex-col items-center">
-      <div className="w-full max-w-2xl">
-        {generalError && (
-          <div className="mb-4 p-4 bg-red-900/30 border border-red-800 rounded-lg flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-            <div>
-              <h3 className="font-medium text-red-400 mb-1">Error</h3>
-              <p className="text-sm text-red-300">{generalError}</p>
-            </div>
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              className="ml-auto text-red-400 hover:text-red-300 hover:bg-red-900/20"
-              onClick={() => setGeneralError(null)}
-            >
-              <X className="w-4 h-4" />
-            </Button>
-          </div>
-        )}
-        
-        <Card className="bg-gray-800/50 border-gray-700 backdrop-blur-sm p-6 rounded-xl shadow-xl">
-          {/* API Key Section - Always visible at the top */}
-          <div className="mb-6 p-4 bg-gray-900/50 rounded-lg">
-            <h3 className="text-lg font-medium text-gray-300 mb-3">OpenAI API Key</h3>
-
-            {apiKeyStatus !== "set" ? (
-              <div className="space-y-3">
-                <p className="text-sm text-gray-400">
-                  Enter your OpenAI API key to enable transcription. Your key is stored locally in your browser.
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => {
-                      setApiKey(e.target.value)
-                      setApiKeyError(null)
-                    }}
-                    placeholder="sk-..."
-                    className="flex-1 px-3 py-2 bg-gray-950 border border-gray-700 rounded-md text-gray-300 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <Button
-                    onClick={saveApiKey}
-                    disabled={apiKeyStatus === "validating" || !apiKey.trim()}
-                    className="bg-blue-600 hover:bg-blue-700"
-                  >
-                    {apiKeyStatus === "validating" ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                    Save Key
-                  </Button>
-                </div>
-                {apiKeyError && <p className="text-sm text-red-400">{apiKeyError}</p>}
-                <p className="text-xs text-gray-500">
-                  Get your API key from{" "}
-                  <a
-                    href="https://platform.openai.com/api-keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-400 hover:underline"
-                  >
-                    OpenAI's dashboard
-                  </a>
-                </p>
-              </div>
-            ) : (
-              <div className="flex justify-between items-center">
-                <p className="text-sm text-green-400 flex items-center">
-                  <span className="w-2 h-2 bg-green-400 rounded-full mr-2"></span>
-                  API key is set and ready to use
-                </p>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={clearApiKey}
-                  className="text-red-400 hover:text-red-300 hover:bg-red-900/20"
-                >
-                  Clear Key
-                </Button>
-              </div>
-            )}
-          </div>
-
-          <Tabs defaultValue="record" value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-3 mb-6 bg-gray-900/50">
-              <TabsTrigger value="record" className="flex items-center gap-2">
-                <Mic className="h-4 w-4" />
-                Record
-              </TabsTrigger>
-              <TabsTrigger value="history" className="flex items-center gap-2">
-                <Save className="h-4 w-4" />
-                History
-              </TabsTrigger>
-              <TabsTrigger value="settings" className="flex items-center gap-2">
-                <Settings className="h-4 w-4" />
-                Game Setup
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="record" className="mt-0">
-              <div className="flex flex-col items-center mb-6">
-                <div className="flex items-center space-x-2 mb-4">
-                  <Switch
-                    id="continuous-mode"
-                    checked={continuousMode}
-                    onCheckedChange={setContinuousMode}
-                    disabled={isRecording}
-                  />
-                  <Label htmlFor="continuous-mode" className="text-gray-300">
-                    Continuous Recording Mode
-                  </Label>
-                </div>
-
-                {/* Recording button */}
-                <div className="relative mb-4">
-                  <Button
-                    type="button"
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="md:col-span-2 space-y-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="grid grid-cols-3 w-full">
+            <TabsTrigger value="recorder">Recorder</TabsTrigger>
+            <TabsTrigger value="history">Hand History</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="recorder" className="space-y-4 pt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Record Your Hand</CardTitle>
+                <CardDescription>
+                  Speak or type your poker hand, then convert it to standard format
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <Button 
+                    variant={isRecording ? "destructive" : "default"}
                     onClick={isRecording ? stopRecording : startRecording}
-                    disabled={isInitializingRecording || apiKeyStatus !== "set" || micPermissionStatus === "denied"}
-                    className={cn(
-                      "w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 border-0",
-                      isRecording
-                        ? "bg-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.5)] hover:bg-red-500/30"
-                        : "bg-blue-500/20 shadow-[0_0_10px_rgba(59,130,246,0.3)] hover:bg-blue-500/30",
-                      (isInitializingRecording || apiKeyStatus !== "set" || micPermissionStatus === "denied") &&
-                        "opacity-70 cursor-not-allowed",
-                    )}
-                    aria-label={isRecording ? "Stop recording" : "Start recording"}
                   >
-                    <div
-                      className={cn(
-                        "absolute inset-0 rounded-full opacity-30",
-                        isRecording && "animate-ping bg-red-500",
-                      )}
-                      style={{
-                        transform: isRecording ? `scale(${1 + audioLevel * 0.5})` : "scale(1)",
-                        opacity: isRecording ? 0.2 + audioLevel * 0.3 : 0.2,
-                      }}
-                    ></div>
-
-                    {isInitializingRecording ? (
-                      <Loader2 className="w-12 h-12 text-blue-400 animate-spin" />
-                    ) : isRecording ? (
-                      <StopCircle className="w-12 h-12 text-red-500 animate-pulse" />
+                    {isRecording ? (
+                      <>
+                        <StopCircle className="mr-2 h-4 w-4" />
+                        Stop Recording
+                      </>
                     ) : (
-                      <Mic className="w-12 h-12 text-blue-400" />
+                      <>
+                        <Mic className="mr-2 h-4 w-4" />
+                        Start Recording
+                      </>
                     )}
                   </Button>
-
-                  {/* Cancel button - only visible during recording */}
-                  {isRecording && (
-                    <Button
-                      type="button"
-                      onClick={cancelRecording}
-                      className="absolute -right-16 top-1/2 transform -translate-y-1/2 bg-gray-800 hover:bg-gray-700 text-red-400 hover:text-red-300"
-                      size="sm"
-                      variant="outline"
-                      aria-label="Cancel recording"
-                    >
-                      <XCircle className="h-4 w-4 mr-1" />
-                      Cancel
-                    </Button>
-                  )}
-
-                  {isRecording && (
-                    <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 bg-gray-900 px-3 py-1 rounded-full text-red-400 text-sm font-mono">
-                      {formatTime(recordingTime)}
-                    </div>
-                  )}
-                </div>
-
-                <p className="text-gray-400 text-center mt-2">{getRecordingStatusText()}</p>
-
-                {/* Recording error message */}
-                {recordingError && (
-                  <div className="mt-4 p-3 bg-red-900/20 border border-red-800 rounded-md flex items-start gap-2 max-w-md">
-                    <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                    <p className="text-sm text-red-300">{recordingError}</p>
-                  </div>
-                )}
-
-                {isRecording && (
-                  <div className="flex flex-col items-center mt-4">
-                    <div className="flex items-center text-sm text-gray-500 mb-4">
-                      <Volume2 className="w-4 h-4 mr-2" />
-                      <div className="w-32 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-100"
-                          style={{ width: `${audioLevel * 100}%` }}
-                        ></div>
-                      </div>
-                    </div>
-
-                    {continuousMode && (
-                      <Button
-                        onClick={markNewHand}
-                        variant="outline"
-                        className="border-blue-700 bg-blue-900/30 text-blue-300 hover:bg-blue-800/50"
-                      >
-                        Mark New Hand
-                      </Button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {(isProcessing || processingQueue.length > 0) && (
-                <div className="flex flex-col items-center justify-center my-4 p-3 bg-gray-900/50 rounded-lg">
-                  <Loader2 className="w-6 h-6 text-blue-400 animate-spin mb-2" />
-                  <p className="text-sm text-gray-400">
-                    {processingQueue.length > 0
-                      ? `Processing ${processingQueue.length + (isProcessing ? 1 : 0)} hand${processingQueue.length > 1 ? "s" : ""}...`
-                      : "Processing hand..."}
-                  </p>
-                </div>
-              )}
-
-              {!isRecording && formattedHands.length === 0 && !isProcessing && (
-                <div className="bg-gray-900/50 rounded-lg p-4 text-gray-400 text-sm">
-                  <h3 className="font-medium text-gray-300 mb-2">How to use:</h3>
-                  <ol className="list-decimal list-inside space-y-2">
-                    <li>Enter your OpenAI API key at the top</li>
-                    <li>Toggle "Continuous Recording Mode" if you want to record multiple hands</li>
-                    <li>Click the microphone button to start recording</li>
-                    <li>Clearly describe your poker hand (positions, actions, bet sizes)</li>
-                    <li>In continuous mode, click "Mark New Hand" when you finish describing a hand</li>
-                    <li>Click the stop button when you're done recording all hands</li>
-                    <li>View your formatted hands in the "History" tab</li>
-                  </ol>
-                  <p className="mt-4 text-xs text-gray-500">
-                    Example: "I was in the big blind with Ace King suited. UTG raised to 3BB, I 3-bet to 9BB, they
-                    called. Flop came Ace of spades, Ten of hearts, Two of diamonds..."
-                  </p>
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="history">
-              {formattedHands.length > 0 ? (
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-lg font-medium text-gray-300">Recorded Hands</h3>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={exportAllHands}
-                        className="text-gray-300 border-gray-700"
-                      >
-                        <Save className="w-4 h-4 mr-2" />
-                        Export All
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={resetAll}
-                        className="text-red-400 border-gray-700 hover:bg-red-900/20 hover:text-red-300"
-                      >
-                        <Trash2 className="w-4 h-4 mr-2" />
-                        Clear All
-                      </Button>
-                    </div>
-                  </div>
-
-                  <Accordion type="single" collapsible className="w-full">
-                    {formattedHands.map((hand, index) => (
-                      <AccordionItem key={hand.id} value={hand.id} className="border-gray-700">
-                        <AccordionTrigger className="hover:bg-gray-800/30 px-4 rounded-lg">
-                          <div className="flex items-center">
-                            <span className="text-gray-300 font-medium">Hand #{formattedHands.length - index}</span>
-                            <span className="ml-3 text-xs text-gray-500">{hand.timestamp.toLocaleTimeString()}</span>
-                          </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-4">
-                          <div className="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-300 overflow-auto max-h-96 mb-2">
-                            <pre className="whitespace-pre-wrap">{hand.text}</pre>
-                          </div>
-                          
-                          {analysisResults[hand.id] && (
-                            <div className="mt-4 mb-2">
-                              <div className="flex items-center gap-2 mb-2">
-                                <h4 className="text-sm font-medium text-blue-400">Hand Analysis</h4>
-                                <span className="text-xs px-2 py-1 bg-blue-950/50 rounded-full text-blue-300 border border-blue-900">
-                                  {gameSettings?.aiModel || "gpt-3.5-turbo"}
-                                </span>
-                              </div>
-                              <div className="bg-blue-900/20 border border-blue-800/30 rounded-lg p-4 text-sm text-gray-300 overflow-auto max-h-96">
-                                <pre className="whitespace-pre-wrap">{analysisResults[hand.id].replace(/^Analysis by OpenAI .*?:\n\n/, '')}</pre>
-                              </div>
-                            </div>
-                          )}
-                          
-                          {analysisError[hand.id] && (
-                            <div className="mt-2 p-3 bg-red-900/20 border border-red-800 rounded-md flex items-start gap-2">
-                              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                              <p className="text-sm text-red-300">{analysisError[hand.id]}</p>
-                            </div>
-                          )}
-                          
-                          <div className="flex justify-end gap-2 mt-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => analyzeHand(hand.id)}
-                              disabled={analyzingHand === hand.id || !apiKey}
-                              className="text-green-400 hover:text-green-300 hover:bg-green-900/20"
-                            >
-                              {analyzingHand === hand.id ? (
-                                <>
-                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                  Analyzing...
-                                </>
-                              ) : (
-                                <>
-                                  <Activity className="w-4 h-4 mr-2" />
-                                  Analyze
-                                </>
-                              )}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => copyToClipboard(hand.id)}
-                              className="text-blue-400 hover:text-blue-300 hover:bg-blue-900/20"
-                            >
-                              <Copy className="w-4 h-4 mr-2" />
-                              {copied === hand.id ? "Copied!" : "Copy"}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => deleteHand(hand.id)}
-                              className="text-red-400 hover:text-red-300 hover:bg-red-900/20"
-                            >
-                              <Trash2 className="w-4 h-4 mr-2" />
-                              Delete
-                            </Button>
-                          </div>
-                        </AccordionContent>
-                      </AccordionItem>
-                    ))}
-                  </Accordion>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-8 text-gray-400">
-                  <p>No hands recorded yet</p>
                   <Button
-                    variant="link"
-                    onClick={() => {
-                      const tabsList = document.querySelector('[role="tablist"]')
-                      const recordTab = tabsList?.querySelector('[data-value="record"]')
-                      if (recordTab) {
-                        ;(recordTab as HTMLElement).click()
-                      }
-                    }}
-                    className="mt-2 text-blue-400"
+                    variant="secondary"
+                    onClick={() => setTranscription('')}
+                    disabled={isRecording || !transcription}
                   >
-                    Go to recording
+                    <X className="mr-2 h-4 w-4" />
+                    Clear
                   </Button>
                 </div>
+                
+                <Textarea
+                  placeholder="Record or type your poker hand here..."
+                  value={transcription}
+                  onChange={(e) => setTranscription(e.target.value)}
+                  className="h-40 font-mono text-sm"
+                  disabled={isRecording}
+                />
+                
+                <Button 
+                  className="w-full" 
+                  onClick={handleConvertClick}
+                  disabled={isProcessing || !transcription.trim() || !userApiKey}
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Converting...
+                    </>
+                  ) : (
+                    'Convert to Hand History'
+                  )}
+                </Button>
+                
+                {!userApiKey && (
+                  <Alert variant="destructive">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      Please add your OpenAI API key in account settings
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </CardContent>
+            </Card>
+            
+            <Card>
+              <CardHeader>
+                <CardTitle>Converted Hand History</CardTitle>
+                <CardDescription>
+                  Standard format hand history generated from your recording
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Textarea
+                  value={formattedHands.length > 0 ? formattedHands[formattedHands.length - 1].text : transcription}
+                  onChange={(e) => {
+                    // This is a placeholder for the Textarea component
+                  }}
+                  className="h-60 font-mono text-sm"
+                  placeholder="Converted hand history will appear here..."
+                />
+                
+                <div className="flex justify-between">
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      // This is a placeholder for the Analyze button
+                    }}
+                    disabled={isProcessing || !formattedHands.length > 0 || !userApiKey}
+                  >
+                    {isProcessing ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <Activity className="mr-2 h-4 w-4" />
+                        Analyze Hand
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </CardContent>
+              
+              {generalError && (
+                <CardFooter>
+                  <Alert variant="destructive">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>{generalError}</AlertDescription>
+                  </Alert>
+                </CardFooter>
               )}
-            </TabsContent>
-
-            <TabsContent value="settings">
-              <GameSettings onSettingsSaved={handleGameSettingsSaved} />
-            </TabsContent>
-          </Tabs>
-        </Card>
+            </Card>
+            
+            {formattedHands.length > 0 && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <div>
+                    <CardTitle>Hand Analysis</CardTitle>
+                    <CardDescription>
+                      AI-powered analysis of your poker hand
+                    </CardDescription>
+                  </div>
+                  {gameSettings && (
+                    <Badge variant="outline" className="ml-2">
+                      Model: {gameSettings.aiModel || "gpt-3.5-turbo"}
+                    </Badge>
+                  )}
+                </CardHeader>
+                <CardContent className="pt-4">
+                  <div className="max-h-[500px] overflow-y-auto prose prose-sm dark:prose-invert">
+                    {analysisResults[formattedHands[formattedHands.length - 1].id] && (
+                      <ReactMarkdown>{analysisResults[formattedHands[formattedHands.length - 1].id]}</ReactMarkdown>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+          
+          <TabsContent value="history" className="space-y-4 pt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <Save className="mr-2 h-5 w-5" />
+                  Saved Hand Histories
+                </CardTitle>
+                <CardDescription>
+                  Your previously saved poker hand histories
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {isProcessing ? (
+                  <div className="flex justify-center p-8">
+                    <Loader2 className="h-8 w-8 animate-spin" />
+                  </div>
+                ) : formattedHands.length === 0 ? (
+                  <div className="text-center p-8 text-muted-foreground">
+                    No saved hand histories yet
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <Accordion type="single" collapsible className="w-full">
+                      {formattedHands.map((hand) => (
+                        <AccordionItem value={hand.id || 'unknown'} key={hand.id}>
+                          <AccordionTrigger className="hover:no-underline">
+                            <div className="flex items-center justify-between w-full pr-4">
+                              <div className="text-left font-medium">
+                                {hand.timestamp.toLocaleString()}
+                              </div>
+                              <div className="flex space-x-2">
+                                <Badge variant="outline">
+                                  {gameSettings?.aiModel ? "Live" : "Online"}
+                                </Badge>
+                              </div>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent>
+                            <div className="space-y-2">
+                              <div className="font-mono text-xs bg-muted p-2 rounded max-h-40 overflow-y-auto whitespace-pre-wrap">
+                                {hand.text}
+                              </div>
+                              <div className="flex justify-between">
+                                <Button 
+                                  size="sm" 
+                                  onClick={() => handleSelectHistory(hand)}
+                                >
+                                  Open
+                                </Button>
+                                <Button 
+                                  size="sm" 
+                                  variant="destructive" 
+                                  onClick={() => handleDeleteHistory(hand.id!)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
+                      ))}
+                    </Accordion>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+          
+          <TabsContent value="settings" className="space-y-4 pt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Game Settings</CardTitle>
+                <CardDescription>
+                  Configure settings for hand history conversion
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <GameSettings 
+                  settings={gameSettings} 
+                  onChange={handleGameSettingsChange} 
+                />
+              </CardContent>
+            </Card>
+            
+            <GameSettingsManager 
+              userId={userId}
+              currentSettings={gameSettings}
+              onSelectConfig={handleConfigSelect}
+            />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   )

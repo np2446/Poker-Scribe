@@ -1,25 +1,53 @@
-import { Transcriber } from "@/components/transcriber"
+'use client'
+
+import { useState } from 'react'
+import { Transcriber } from '@/components/transcriber'
+import { AuthForm } from '@/components/auth-form'
+import { UserProfile } from '@/components/user-profile'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useAuth } from '@/context/auth-context'
 
 export default function Home() {
-  return (
-    <main className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black text-white">
-      <div className="container mx-auto px-4 py-12 max-w-4xl">
-        <header className="mb-12 text-center">
-          <h1 className="text-4xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600">
-            PokerScribe
-          </h1>
-          <p className="text-gray-400 max-w-2xl mx-auto">
-            Record your poker hands verbally and convert them to standard hand history format instantly
-          </p>
-        </header>
+  const { user, isLoading } = useAuth()
+  const [activeTab, setActiveTab] = useState('transcriber')
 
-        <Transcriber />
-
-        <footer className="mt-20 text-center text-gray-500 text-sm">
-          <p>Powered by OpenAI • © {new Date().getFullYear()} PokerScribe</p>
-        </footer>
+  if (isLoading) {
+    return (
+      <div className="container py-8 space-y-8">
+        <Skeleton className="h-12 w-48 mb-8" />
+        <Skeleton className="h-[500px] w-full rounded-lg" />
       </div>
-    </main>
+    )
+  }
+
+  if (!user) {
+    return (
+      <div className="container flex items-center justify-center min-h-screen py-12">
+        <div className="w-full max-w-md">
+          <AuthForm />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="container py-8 space-y-8">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="grid grid-cols-2 w-[400px]">
+          <TabsTrigger value="transcriber">Poker Transcriber</TabsTrigger>
+          <TabsTrigger value="account">Account</TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="transcriber" className="space-y-4 pt-4">
+          <Transcriber userId={user.id} userApiKey={user.openai_api_key} />
+        </TabsContent>
+        
+        <TabsContent value="account" className="space-y-4 pt-4">
+          <UserProfile />
+        </TabsContent>
+      </Tabs>
+    </div>
   )
 }
 
