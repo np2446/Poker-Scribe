@@ -5,17 +5,23 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
-import { AlertCircle, Loader2, User, LogOut, Save } from 'lucide-react'
+import { AlertCircle, Loader2, User, LogOut, Save, Check } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { saveUserApiKey } from '@/lib/auth'
 import { useAuth } from '@/context/auth-context'
+import { useToast } from '@/components/ui/use-toast'
 
-export function UserProfile() {
+interface UserProfileProps {
+  onApiKeySaved?: () => void
+}
+
+export function UserProfile({ onApiKeySaved }: UserProfileProps) {
   const { user, logout, refreshUser } = useAuth()
+  const { toast } = useToast()
   const [apiKey, setApiKey] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState('')
-  const [successMessage, setSuccessMessage] = useState('')
+  const [saveSuccess, setSaveSuccess] = useState(false)
 
   useEffect(() => {
     if (user) {
@@ -28,12 +34,25 @@ export function UserProfile() {
     
     setIsSaving(true)
     setError('')
-    setSuccessMessage('')
+    setSaveSuccess(false)
     
     try {
       await saveUserApiKey(user.id, apiKey)
-      setSuccessMessage('API key saved successfully')
+      setSaveSuccess(true)
       await refreshUser() // Refresh user data to get updated API key
+      
+      toast({
+        title: "API Key Saved",
+        description: "Your OpenAI API key has been securely stored.",
+        duration: 3000,
+      })
+      
+      // Call callback if provided after a short delay to show success state
+      setTimeout(() => {
+        if (onApiKeySaved) {
+          onApiKeySaved()
+        }
+      }, 1000)
     } catch (err) {
       console.error('Error saving API key:', err)
       setError('Failed to save API key')
@@ -74,9 +93,9 @@ export function UserProfile() {
           </Alert>
         )}
         
-        {successMessage && (
+        {saveSuccess && (
           <Alert className="mb-4 bg-green-50 text-green-800 border-green-200">
-            <AlertDescription>{successMessage}</AlertDescription>
+            <AlertDescription>API key saved successfully</AlertDescription>
           </Alert>
         )}
         

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Transcriber } from '@/components/transcriber'
 import { AuthForm } from '@/components/auth-form'
 import { UserProfile } from '@/components/user-profile'
@@ -11,6 +11,13 @@ import { useAuth } from '@/context/auth-context'
 export default function Home() {
   const { user, isLoading } = useAuth()
   const [activeTab, setActiveTab] = useState('transcriber')
+
+  // Set transcriber as active tab when user logs in
+  useEffect(() => {
+    if (user) {
+      setActiveTab('transcriber')
+    }
+  }, [user])
 
   if (isLoading) {
     return (
@@ -44,7 +51,7 @@ export default function Home() {
         </TabsContent>
         
         <TabsContent value="account" className="space-y-4 pt-4">
-          <UserProfile />
+          <UserProfile onApiKeySaved={() => setActiveTab('transcriber')} />
         </TabsContent>
       </Tabs>
     </div>

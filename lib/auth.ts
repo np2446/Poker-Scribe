@@ -6,6 +6,13 @@ export async function registerUser(email: string, password: string): Promise<Aut
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
+      options: {
+        emailRedirectTo: window.location.origin,
+        // Skip email verification by setting this to false
+        data: {
+          email_confirmed: true
+        }
+      }
     })
 
     if (error) {
@@ -13,7 +20,18 @@ export async function registerUser(email: string, password: string): Promise<Aut
       return { success: false, error: error.message }
     }
 
+    // Automatically sign in the user after registration
     if (data?.user) {
+      // Create automatic sign-in
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password
+      })
+      
+      if (signInError) {
+        console.error('Error automatically signing in after registration:', signInError)
+      }
+      
       return { 
         success: true, 
         user: {
@@ -117,61 +135,62 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('*')
+      .select('id, email, created_at, updated_at')
       .eq('id', userId)
-      .single()
+      .single();
     
     if (error) {
       if (error.code !== 'PGRST116') { // No rows found
-        console.error('Error fetching user profile:', error)
+        console.error('Error fetching user profile:', error);
       }
-      return null
+      return null;
     }
     
-    return data as UserProfile
+    // Fetch the API key separately using the secure endpoint
+    try {
+      const response = await fetch(`/api/secure-key?userId=${userId}`);
+      const keyData = await response.json();
+      
+      if (keyData.success && keyData.apiKey) {
+        return {
+          ...data,
+          openai_api_key: keyData.apiKey
+        } as UserProfile;
+      }
+    } catch (keyError) {
+      console.error('Error fetching API key:', keyError);
+      // Continue without the API key
+    }
+    
+    return data as UserProfile;
   } catch (error) {
-    console.error('Exception fetching user profile:', error)
-    return null
+    console.error('Exception fetching user profile:', error);
+    return null;
   }
 }
 
 // Save or update user's OpenAI API key
 export async function saveUserApiKey(userId: string, apiKey: string): Promise<boolean> {
   try {
-    // Check if profile exists
-    const existingProfile = await getUserProfile(userId)
+    // Use the secure API endpoint to save the encrypted API key
+    const response = await fetch('/api/secure-key', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ userId, apiKey }),
+    });
+
+    const data = await response.json();
     
-    if (existingProfile) {
-      // Update existing profile
-      const { error } = await supabase
-        .from('profiles')
-        .update({ openai_api_key: apiKey, updated_at: new Date().toISOString() })
-        .eq('id', userId)
-      
-      if (error) {
-        console.error('Error updating API key:', error)
-        return false
-      }
-    } else {
-      // Create new profile
-      const { error } = await supabase
-        .from('profiles')
-        .insert({ 
-          id: userId, 
-          openai_api_key: apiKey,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-      
-      if (error) {
-        console.error('Error creating profile with API key:', error)
-        return false
-      }
+    if (!data.success) {
+      console.error('Error saving API key:', data.error);
+      return false;
     }
     
-    return true
+    return true;
   } catch (error) {
-    console.error('Exception saving API key:', error)
-    return false
+    console.error('Exception saving API key:', error);
+    return false;
   }
 } 

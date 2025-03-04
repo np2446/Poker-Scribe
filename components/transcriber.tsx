@@ -17,9 +17,22 @@ import { Badge } from '@/components/ui/badge'
 import { GameSettingsManager } from '@/components/game-settings-manager'
 import ReactMarkdown from 'react-markdown'
 import { saveHandHistory, getHandHistories, deleteHandHistory, saveHandAnalysis, getHandAnalysis } from '@/lib/database'
-import { HandHistory, HandAnalysis, GameSettingConfig } from '@/lib/supabase'
+import { supabase } from "@/lib/supabase"
+import type { HandHistory, HandAnalysis, GameSettingConfig } from "@/lib/supabase"
 import { getDefaultGameSettingConfig } from '@/lib/database'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card"
+import { Textarea } from "@/components/ui/textarea"
+
+// Add SpeechRecognition type
+declare global {
+  interface Window {
+    SpeechRecognition: any;
+    webkitSpeechRecognition: any;
+  }
+}
+
+type SpeechRecognition = any;
 
 // Define a type for game settings
 type GameSettingsType = {
@@ -38,6 +51,9 @@ interface TranscriberProps {
   userId: string
   userApiKey?: string
 }
+
+// Define HandHistoryInsert type for database insertion
+type HandHistoryInsert = Omit<HandHistory, 'id' | 'created_at' | 'updated_at'>;
 
 export function Transcriber({ userId, userApiKey }: TranscriberProps) {
   const { toast } = useToast()
@@ -78,6 +94,8 @@ export function Transcriber({ userId, userApiKey }: TranscriberProps) {
   const [analysisError, setAnalysisError] = useState<Record<string, string>>({})
 
   const [generalError, setGeneralError] = useState<string | null>(null)
+
+  const [processingStep, setProcessingStep] = useState<string>("")
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
@@ -487,64 +505,55 @@ export function Transcriber({ userId, userApiKey }: TranscriberProps) {
 
   // Function to format transcribed text with game settings context
   const processRecording = async (blob: Blob) => {
+    if (!userApiKey) {
+      toast({
+        title: 'API Key Required',
+        description: 'Please add your OpenAI API key in the Account settings',
+        variant: 'destructive',
+      })
+      return
+    }
+
     setIsProcessing(true)
-    setTranscription("")
-    
+    setProcessingStep('transcribing')
+
     try {
-      // Transcribe audio
-      const transcribedText = await transcribeAudio(blob, apiKey)
-      setTranscription(transcribedText)
+      // Use the user's API key securely 
+      const transcription = await transcribeAudio(blob, userApiKey)
+      setTranscription(transcription)
       
-      // Prepare context with game settings if available
-      let contextPrompt = transcribedText
-      
-      if (gameSettings) {
-        const { gameType, tableSize, smallBlind, bigBlind, ante, startingStack, currency } = gameSettings
-        
-        // Add game settings context to the transcription
-        let settingsContext = "Additional context: "
-        
-        if (gameType) {
-          settingsContext += `Game type: ${gameType === "cash" ? "Cash Game" : "Tournament"}. `
-        }
-        
-        if (gameType === "cash" && smallBlind && bigBlind) {
-          settingsContext += `Stakes: ${currency || "$"}${smallBlind}/${currency || "$"}${bigBlind}. `
+      // Process with formatting if we got a transcription
+      if (transcription) {
+        setProcessingStep('formatting')
+        const formatted = await formatHandHistory(transcription, userApiKey)
+        if (formatted) {
+          // Add the formatted hand to the display list
+          const newHandId = `hand-${Date.now()}`
+          setFormattedHands(prev => [
+            ...prev,
+            {
+              id: newHandId,
+              text: formatted,
+              timestamp: new Date(),
+            },
+          ])
           
-          if (ante && ante !== "0") {
-            settingsContext += `Ante: ${currency || "$"}${ante}. `
+          // Save formatted hand to database if logged in
+          if (userId) {
+            await saveHandToDatabase(transcription, formatted)
           }
         }
-        
-        if (tableSize) {
-          settingsContext += `${tableSize}-max table. `
-        }
-        
-        if (startingStack) {
-          settingsContext += `Starting stack: ${startingStack}${gameType === "cash" ? "BB" : " chips"}. `
-        }
-        
-        // Prepend the context to the transcription
-        contextPrompt = `${settingsContext}\n\n${transcribedText}`
       }
-
-      // Format hand history with the context
-      const formatted = await formatHandHistory(contextPrompt, apiKey)
-      
-      // Add the formatted hand to our list
-      setFormattedHands((prev) => [
-        ...prev,
-        {
-          id: `hand-${Date.now()}`,
-          text: formatted,
-          timestamp: new Date(),
-        },
-      ])
-    } catch (error) {
-      console.error("Error processing recording:", error)
-      setApiKeyError("Error processing recording. Please check your API key.")
+    } catch (err) {
+      console.error('Error processing recording:', err)
+      toast({
+        title: 'Processing Error',
+        description: 'Failed to process the recording',
+        variant: 'destructive',
+      })
     } finally {
       setIsProcessing(false)
+      setProcessingStep('')
     }
   }
 
@@ -796,15 +805,14 @@ export function Transcriber({ userId, userApiKey }: TranscriberProps) {
   }
 
   const saveHandToDatabase = async (rawText: string, convertedText: string) => {
-    if (!userId) return
+    if (!userId) return null
     
     try {
-      const handHistory: HandHistory = {
+      const handHistory: Omit<HandHistory, 'id' | 'created_at'> = {
         user_id: userId,
         text: convertedText,
-        raw_text: rawText,
         timestamp: new Date().toISOString(),
-        game_settings: gameSettings
+        game_settings: gameSettings || undefined
       }
       
       const savedHand = await saveHandHistory(handHistory)
@@ -825,17 +833,16 @@ export function Transcriber({ userId, userApiKey }: TranscriberProps) {
     }
   }
 
-  const handleSelectHistory = (hand: HandHistory) => {
-    setFormattedHands((prev) => [
-      ...prev,
+  const handleSelectHistory = (hand: { id: string; text: string; timestamp: Date }) => {
+    setFormattedHands([
       {
-        id: `hand-${Date.now()}`,
+        id: hand.id,
         text: hand.text,
-        timestamp: new Date(hand.timestamp),
+        timestamp: hand.timestamp,
       },
     ])
-    setTranscription(hand.raw_text)
-    setGameSettings(hand.game_settings)
+    setTranscription(hand.text)
+    setGameSettings(null)
     setActiveTab("recorder")
   }
 
@@ -867,7 +874,7 @@ export function Transcriber({ userId, userApiKey }: TranscriberProps) {
     try {
       const histories = await getHandHistories(userId)
       setFormattedHands(histories.map((hand) => ({
-        id: `hand-${Date.now()}`,
+        id: hand.id || `hand-${Date.now()}`,
         text: hand.text,
         timestamp: new Date(hand.timestamp),
       })))
@@ -887,19 +894,32 @@ export function Transcriber({ userId, userApiKey }: TranscriberProps) {
     try {
       const defaultConfig = await getDefaultGameSettingConfig(userId)
       if (defaultConfig) {
-        setGameSettings(defaultConfig.game_settings)
+        setGameSettings(castToGameSettingsType(defaultConfig.game_settings))
       }
     } catch (err) {
       console.error('Error loading default game settings:', err)
     }
   }
 
+  // Function to safely cast database game settings to the required type
+  const castToGameSettingsType = (settings: any): GameSettingsType => {
+    return {
+      ...settings,
+      gameType: settings.gameType === "cash" || settings.gameType === "tournament" 
+        ? settings.gameType as "cash" | "tournament" 
+        : undefined,
+      aiModel: ["gpt-3.5-turbo", "gpt-4o", "o1", "o3-mini"].includes(settings.aiModel)
+        ? settings.aiModel as "gpt-3.5-turbo" | "gpt-4o" | "o1" | "o3-mini"
+        : undefined
+    }
+  }
+
   const handleGameSettingsChange = (newSettings: any) => {
-    setGameSettings(newSettings)
+    setGameSettings(newSettings as GameSettingsType)
   }
 
   const handleConfigSelect = (config: GameSettingConfig) => {
-    setGameSettings(config.game_settings)
+    setGameSettings(castToGameSettingsType(config.game_settings))
     toast({
       title: 'Settings Loaded',
       description: `Loaded settings: ${config.name}`,
@@ -1009,7 +1029,7 @@ export function Transcriber({ userId, userApiKey }: TranscriberProps) {
                     onClick={() => {
                       // This is a placeholder for the Analyze button
                     }}
-                    disabled={isProcessing || !formattedHands.length > 0 || !userApiKey}
+                    disabled={isProcessing || formattedHands.length === 0 || !userApiKey}
                   >
                     {isProcessing ? (
                       <>
@@ -1140,8 +1160,7 @@ export function Transcriber({ userId, userApiKey }: TranscriberProps) {
               </CardHeader>
               <CardContent>
                 <GameSettings 
-                  settings={gameSettings} 
-                  onChange={handleGameSettingsChange} 
+                  onSettingsSaved={handleGameSettingsChange} 
                 />
               </CardContent>
             </Card>
