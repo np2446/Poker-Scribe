@@ -1,7 +1,5 @@
 # PokerScribe
 
-![PokerScribe Logo](public/logo.png)
-
 A powerful poker hand transcription tool that converts verbal descriptions into standard hand history format using OpenAI's Whisper and GPT-4o.
 
 ## Overview
