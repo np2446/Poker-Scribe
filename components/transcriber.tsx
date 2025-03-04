@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion"
 import { cn } from "@/lib/utils"
 import { transcribeAudio, formatHandHistory } from "@/lib/transcription"
-import { Loader2, StopCircle, Mic, Volume2, Save, Trash2, Copy, AlertCircle, Settings, XCircle } from "lucide-react"
+import { Loader2, StopCircle, Mic, Volume2, Save, Trash2, Copy, AlertCircle, Settings, XCircle, Activity, X } from "lucide-react"
 import { GameSettings } from "@/components/game-settings"
 import { z } from "zod"
 
@@ -23,6 +23,7 @@ type GameSettingsType = {
   buyIn?: string
   startingStack?: string
   currency?: string
+  aiModel?: "gpt-3.5-turbo" | "gpt-4o" | "o1" | "o3-mini"
 }
 
 export function Transcriber() {
@@ -57,6 +58,12 @@ export function Transcriber() {
   const [recordingError, setRecordingError] = useState<string | null>(null)
   const [micPermissionStatus, setMicPermissionStatus] = useState<"prompt" | "granted" | "denied">("prompt")
   const [isInitializingRecording, setIsInitializingRecording] = useState(false)
+
+  const [analyzingHand, setAnalyzingHand] = useState<string | null>(null)
+  const [analysisResults, setAnalysisResults] = useState<Record<string, string>>({})
+  const [analysisError, setAnalysisError] = useState<Record<string, string>>({})
+
+  const [generalError, setGeneralError] = useState<string | null>(null)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
@@ -643,9 +650,93 @@ export function Transcriber() {
     return "Click to start recording your hand"
   }
 
+  const analyzeHand = async (id: string) => {
+    const hand = formattedHands.find((h) => h.id === id)
+    if (!hand || !apiKey) return
+    
+    setAnalyzingHand(id)
+    setAnalysisError((prev) => ({ ...prev, [id]: '' }))
+    setGeneralError(null)
+    
+    try {
+      console.log("Analyzing hand:", id)
+      
+      // Use the selected model or default to gpt-3.5-turbo
+      const modelToUse = gameSettings?.aiModel || "gpt-3.5-turbo"
+      console.log("Using AI model:", modelToUse)
+      
+      const response = await fetch("/api/analyze-hand", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          handText: hand.text,
+          apiKey,
+          model: modelToUse,
+        }),
+      })
+      
+      if (!response.ok) {
+        const errorData = await response.text()
+        console.error("Error response from analyze-hand API:", response.status, errorData)
+        const errorMessage = `Error: ${response.status}${errorData ? ` - ${errorData}` : ''}`
+        setGeneralError(errorMessage)
+        throw new Error(errorMessage)
+      }
+      
+      console.log("Received streaming response, status:", response.status)
+      
+      // Handle streaming response
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error("Failed to get response reader")
+      
+      let analysis = `Analysis by OpenAI ${modelToUse}:\n\n`
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        
+        // Convert the chunk to text and append to accumulated result
+        const chunk = new TextDecoder().decode(value)
+        analysis += chunk
+        
+        // Update the analysis in real-time
+        setAnalysisResults((prev) => ({ ...prev, [id]: analysis }))
+      }
+      
+      console.log("Analysis complete for hand:", id)
+    } catch (error) {
+      console.error("Error analyzing hand:", error)
+      setAnalysisError((prev) => ({ 
+        ...prev, 
+        [id]: error instanceof Error ? error.message : "Failed to analyze hand" 
+      }))
+    } finally {
+      setAnalyzingHand(null)
+    }
+  }
+
   return (
     <div className="flex flex-col items-center">
       <div className="w-full max-w-2xl">
+        {generalError && (
+          <div className="mb-4 p-4 bg-red-900/30 border border-red-800 rounded-lg flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+            <div>
+              <h3 className="font-medium text-red-400 mb-1">Error</h3>
+              <p className="text-sm text-red-300">{generalError}</p>
+            </div>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              className="ml-auto text-red-400 hover:text-red-300 hover:bg-red-900/20"
+              onClick={() => setGeneralError(null)}
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        )}
+        
         <Card className="bg-gray-800/50 border-gray-700 backdrop-blur-sm p-6 rounded-xl shadow-xl">
           {/* API Key Section - Always visible at the top */}
           <div className="mb-6 p-4 bg-gray-900/50 rounded-lg">
@@ -901,7 +992,48 @@ export function Transcriber() {
                           <div className="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-300 overflow-auto max-h-96 mb-2">
                             <pre className="whitespace-pre-wrap">{hand.text}</pre>
                           </div>
+                          
+                          {analysisResults[hand.id] && (
+                            <div className="mt-4 mb-2">
+                              <div className="flex items-center gap-2 mb-2">
+                                <h4 className="text-sm font-medium text-blue-400">Hand Analysis</h4>
+                                <span className="text-xs px-2 py-1 bg-blue-950/50 rounded-full text-blue-300 border border-blue-900">
+                                  {gameSettings?.aiModel || "gpt-3.5-turbo"}
+                                </span>
+                              </div>
+                              <div className="bg-blue-900/20 border border-blue-800/30 rounded-lg p-4 text-sm text-gray-300 overflow-auto max-h-96">
+                                <pre className="whitespace-pre-wrap">{analysisResults[hand.id].replace(/^Analysis by OpenAI .*?:\n\n/, '')}</pre>
+                              </div>
+                            </div>
+                          )}
+                          
+                          {analysisError[hand.id] && (
+                            <div className="mt-2 p-3 bg-red-900/20 border border-red-800 rounded-md flex items-start gap-2">
+                              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                              <p className="text-sm text-red-300">{analysisError[hand.id]}</p>
+                            </div>
+                          )}
+                          
                           <div className="flex justify-end gap-2 mt-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => analyzeHand(hand.id)}
+                              disabled={analyzingHand === hand.id || !apiKey}
+                              className="text-green-400 hover:text-green-300 hover:bg-green-900/20"
+                            >
+                              {analyzingHand === hand.id ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                  Analyzing...
+                                </>
+                              ) : (
+                                <>
+                                  <Activity className="w-4 h-4 mr-2" />
+                                  Analyze
+                                </>
+                              )}
+                            </Button>
                             <Button
                               variant="ghost"
                               size="sm"

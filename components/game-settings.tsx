@@ -48,6 +48,9 @@ const gameSettingsSchema = z.object({
   currency: z.enum(["$", "€", "£"], {
     required_error: "Please select a currency.",
   }).default("$"),
+  aiModel: z.enum(["gpt-3.5-turbo", "gpt-4o", "o1", "o3-mini"], {
+    required_error: "Please select an AI model.",
+  }).default("gpt-3.5-turbo"),
 })
 
 type GameSettingsValues = z.infer<typeof gameSettingsSchema>
@@ -61,6 +64,7 @@ const defaultValues: Partial<GameSettingsValues> = {
   ante: "0",
   currency: "$",
   startingStack: "100",
+  aiModel: "gpt-3.5-turbo",
 }
 
 interface GameSettingsProps {
@@ -100,7 +104,6 @@ export function GameSettings({ onSettingsSaved }: GameSettingsProps) {
         <CardTitle>Game Settings</CardTitle>
         <CardDescription>
           Configure table information to streamline your hand recordings.
-          All fields are optional but will help create more detailed hand histories.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -272,9 +275,68 @@ export function GameSettings({ onSettingsSaved }: GameSettingsProps) {
                   />
                 </>
               )}
+
+              {form.watch("gameType") === "tournament" ? (
+                <>
+                  <FormField
+                    control={form.control}
+                    name="buyIn"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Buy-in</FormLabel>
+                        <FormControl>
+                          <Input type="text" placeholder="10.00" {...field} className="bg-gray-800 border-gray-700" />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="startingStack"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Starting Stack</FormLabel>
+                        <FormControl>
+                          <Input type="text" placeholder="1500" {...field} className="bg-gray-800 border-gray-700" />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                </>
+              ) : null}
             </div>
 
-            <Button type="submit" className="w-full">
+            <div className="border-t pt-4 border-gray-700 mt-4">
+              <h3 className="text-lg font-medium text-gray-300 mb-3">AI Settings</h3>
+              <FormField
+                control={form.control}
+                name="aiModel"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Hand Analysis Model</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select AI model" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent className="bg-gray-800 border border-gray-700">
+                        <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo - Fast & cost-effective</SelectItem>
+                        <SelectItem value="gpt-4o">GPT-4o - Advanced multimodal capabilities</SelectItem>
+                        <SelectItem value="o1">o1 - Advanced reasoning for complex problems</SelectItem>
+                        <SelectItem value="o3-mini">o3-mini - Fast with strong reasoning</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      Select the OpenAI model to use for analyzing poker hands
+                    </FormDescription>
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700">
               <Save className="mr-2 h-4 w-4" />
               Save Settings
             </Button>
